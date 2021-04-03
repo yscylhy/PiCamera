@@ -14,10 +14,10 @@ from fractions import Fraction
 import numpy as np
 from camera import MyCamera
 
-if sys.platform is 'linux' or sys.platform is 'linux2':
+if sys.platform == 'linux' or sys.platform == 'linux2':
     from picamera.array import PiRGBArray
     from picamera import PiCamera
-elif sys.platform is 'win32':
+elif sys.platform == 'win32':
     import psutil
 else:
     import psutil
@@ -95,7 +95,7 @@ class PiCameraGUI:
     def takeSnapshot(self, event):
         ts = datetime.datetime.now()
         filename = "{}.png".format(ts.strftime("%Y-%m-%d_%H-%M-%S"))
-        p = os.path.sep.join((self.outputPath, filename))
+        p = os.path.abspath(os.path.sep.join((self.outputPath, filename)))
         if self.camera is 'csi':
             cv2.imwrite(p, cv2.cvtColor(self.frame,  cv2.COLOR_BGR2RGB))
         else:
@@ -105,7 +105,7 @@ class PiCameraGUI:
 
     def takeVideo(self, event):
         ts = datetime.datetime.now()
-        folder_name = os.path.join(self.outputPath, (ts.strftime("%Y-%m-%d_%H-%M-%S")))
+        folder_name = os.path.abspath(os.path.join(self.outputPath, (ts.strftime("%Y-%m-%d_%H-%M-%S"))))
         os.mkdir(folder_name)
         tic = time.time()
         num = 1

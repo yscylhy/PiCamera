@@ -3,9 +3,9 @@ import cameraGUI
 import sys
 
 
-if sys.platform is 'linux' or sys.platform is 'linux2':
+if sys.platform == 'linux' or sys.platform == 'linux2':
     camera = camera.MyCamera('csi')
-elif sys.platform is 'win32':
+elif sys.platform == 'win32':
     camera = camera.MyCamera('usb')
 else:
     camera = camera.MyCamera('usb')

@@ -13,7 +13,7 @@ from io import BytesIO
 from fractions import Fraction
 import numpy as np
 
-if sys.platform is 'linux' or sys.platform is 'linux2':
+if sys.platform == 'linux' or sys.platform == 'linux2':
     from picamera import PiCamera
 
 
