@@ -96,8 +96,9 @@ class PiCameraGUI:
         ts = datetime.datetime.now()
         filename = "{}.png".format(ts.strftime("%Y-%m-%d_%H-%M-%S"))
         p = os.path.abspath(os.path.sep.join((self.outputPath, filename)))
-        if self.camera is 'csi':
-            cv2.imwrite(p, cv2.cvtColor(self.frame,  cv2.COLOR_BGR2RGB))
+        ret, self.frame = self.camera.read()
+        if self.camera.interface == 'csi':
+            cv2.imwrite(p, cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB))
         else:
             cv2.imwrite(p, self.frame)
 
@@ -111,11 +112,10 @@ class PiCameraGUI:
         num = 1
         pre_time = None
         while time.time() - tic < 5:
-            ts = datetime.datetime.now()
-            p = os.path.join(folder_name, "{}_{}.png".format(num, ts.strftime("%Y-%m-%d_%H-%M-%S")))
+            p = os.path.join(folder_name, "{}.png".format(num))
             if pre_time != self.time_stamp:
                 pre_time = self.time_stamp
-                if self.camera.interface is 'csi':
+                if self.camera.interface == 'csi':
                     cv2.imwrite(p, cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB))
                 else:
                     cv2.imwrite(p, self.frame)
