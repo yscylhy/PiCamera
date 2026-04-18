@@ -1,0 +1,10 @@
+# PiCamera2 App — 依赖
+
+# ─── Pi 上必须 ────────────────────────────────────
+# picamera2 通过 apt 安装，不在 pip requirements 里：
+#   sudo apt install -y python3-picamera2 python3-libcamera
+
+# ─── pip 安装 ────────────────────────────────────
+PyQt6>=6.4.0          # Qt GUI（或用 PySide6）
+numpy>=1.23.0         # 帧处理
+# opencv-python>=4.7  # 仅 USB 降级路径需要，可选
