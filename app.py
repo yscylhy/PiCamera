@@ -22,21 +22,13 @@ from camera import CameraConfig, CameraEngine
 
 IS_PI = sys.platform in ("linux", "linux2")
 
-# Qt 导入（PyQt6 优先，PySide6 备用）
+# picamera2 依赖 PyQt5，必须用 PyQt5 才能嵌入 QPicamera2 widget
 try:
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import Qt, QTimer
+    from PyQt5.QtWidgets import QApplication
+    from PyQt5.QtCore import Qt, QTimer
     QT_AVAILABLE = True
-    QT_BACKEND = "PyQt6"
 except ImportError:
-    try:
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtCore import Qt, QTimer
-        QT_AVAILABLE = True
-        QT_BACKEND = "PySide6"
-    except ImportError:
-        QT_AVAILABLE = False
-        QT_BACKEND = None
+    QT_AVAILABLE = False
 
 if QT_AVAILABLE:
     from ui import CameraUI
@@ -102,51 +94,72 @@ class CameraApp:
     def _run_pi(self):
         """
         Pi 上的正式运行路径。
-        picamera2 使用 DrmPreview，GPU 直通到显示器，
-        Qt 只负责渲染透明的 HUD overlay。
+        用 QPicamera2 widget 把预览嵌入 Qt 窗口，HUD 上下排布。
         """
-        from picamera2 import Picamera2
-        from picamera2.previews import QtGlPreview
-
         if not QT_AVAILABLE:
             print("[APP] Qt not available, falling back to DrmPreview (no UI overlay)")
             self._run_pi_drm_only()
             return
 
-        # 必须先创建 QApplication
+        self._setup_display_env()
+        has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        if not has_display:
+            print("[APP] No display detected, falling back to DrmPreview (no UI overlay)")
+            self._run_pi_drm_only()
+            return
+
+        # Wayland 环境下需要显式指定 platform，否则 Qt 默认尝试 xcb
+        if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
+            os.environ["QT_QPA_PLATFORM"] = "wayland"
+            # shm 优先，让 Qt 优雅 fallback 到 wayland-egl（避免 DRI_Mesa 直接 fatal）
+            os.environ.setdefault("QT_WAYLAND_CLIENT_BUFFER_INTEGRATION", "shm")
+
         self.qt_app = QApplication(sys.argv)
 
-        # 用 QtGlPreview：GPU 渲染到 Qt 窗口，可以在上面叠加 UI
-        # 比 DrmPreview 灵活，比 CPU 路径快
+        from picamera2.previews.qt import QPicamera2
+
         self.engine.start()
         camera = self.engine._camera
 
-        # 启动 picamera2 自带的 Qt GL 预览窗口
-        # 这会创建一个 OpenGL 纹理，把 camera stream 贴上去，帧率可达 60fps
-        camera.start_preview(QtGlPreview())
+        preview_widget = QPicamera2(camera, keep_ar=True)
 
-        # 创建 HUD overlay 窗口（Qt 透明窗口，浮在预览上面）
         self.ui = CameraUI(
             engine=self.engine,
             output_dir=self.output_dir,
             on_capture=self._trigger_capture,
             on_quit=self.shutdown,
+            preview_widget=preview_widget,
         )
         self.ui.show()
 
-        # 定时刷新 HUD 参数显示
+        camera.start()
+
         timer = QTimer()
         timer.timeout.connect(self.ui.refresh_hud)
-        timer.start(500)  # 每 500ms 刷新一次参数显示
+        timer.start(500)
 
         sys.exit(self.qt_app.exec())
 
     
-    def _run_pi_drm_only(self):
-        from picamera2.previews import DrmPreview
+    def _setup_display_env(self):
+        """SSH 等环境下 WAYLAND_DISPLAY 可能没有继承，尝试自动探测"""
+        import pwd
+        uid = os.getuid()
+        xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+        if not os.environ.get("XDG_RUNTIME_DIR"):
+            os.environ["XDG_RUNTIME_DIR"] = xdg
 
+        if not os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+            for name in ["wayland-0", "wayland-1"]:
+                if os.path.exists(os.path.join(xdg, name)):
+                    os.environ["WAYLAND_DISPLAY"] = name
+                    print(f"[APP] Auto-detected Wayland display: {name}")
+                    break
+
+    def _run_pi_drm_only(self):
+        self.engine.start()
         cam = self.engine._camera
-        # 不手动调 start_preview，让 picamera2 用 show_preview=True 自管理事件循环
+        # show_preview=True 让 picamera2 自己管事件循环，不需要手动 start_preview
         cam.start(show_preview=True)
 
         print("[APP] DRM preview running. 按回车拍照，Ctrl+C 退出")
