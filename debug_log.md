@@ -131,18 +131,24 @@ def _run_pi_drm_only(self):
 
 ---
 
-## 当前状态（待验证）
+## 当前状态
 - [x] picamera2 import 正常
 - [x] IMX477 相机识别成功（libcamera v0.5.2 + imx477.json tuning）
-- [ ] DRM 预览正常启动
-- [ ] 拍摄保存 JPEG + DNG
-- [ ] Qt HUD overlay（需要先装 PyQt6）
+- [x] Qt HUD overlay 正常显示，预览画面正常
+- [x] 拍摄保存 JPEG（1.7MB）+ DNG（18.5MB）验证通过
 
-## 下一步
+## 关键依赖（已安装）
 ```bash
-# 安装 Qt（HUD overlay 需要）
-sudo apt install python3-pyqt6
+sudo apt install python3-pyqt5 qt6-wayland python3-opencv python3-pyqt6
+```
 
-# 运行
+## 架构说明
+- picamera2 内部依赖 PyQt5，UI 必须用 PyQt5（不能用 PyQt6）
+- QPicamera2 widget 嵌入主窗口，YUV420 lores 流通过 cv2 转换显示
+- Wayland socket 自动探测（`/run/user/1000/wayland-0`），无需手动设置环境变量
+- Qt Wayland 需设 `QT_WAYLAND_CLIENT_BUFFER_INTEGRATION=shm` 触发 fallback 到 wayland-egl
+
+## 运行
+```bash
 python main.py
 ```

@@ -18,24 +18,13 @@ from pathlib import Path
 
 IS_PI = sys.platform in ("linux", "linux2")
 
-try:
-    from PyQt6.QtWidgets import (
-        QMainWindow, QWidget, QLabel, QPushButton,
-        QVBoxLayout, QHBoxLayout, QComboBox, QSlider,
-        QFrame, QSizePolicy,
-    )
-    from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-    from PyQt6.QtGui import QFont, QColor, QPalette, QImage, QPixmap, QKeyEvent
-    QT_BACKEND = "PyQt6"
-except ImportError:
-    from PySide6.QtWidgets import (
-        QMainWindow, QWidget, QLabel, QPushButton,
-        QVBoxLayout, QHBoxLayout, QComboBox, QSlider,
-        QFrame, QSizePolicy,
-    )
-    from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal
-    from PySide6.QtGui import QFont, QColor, QPalette, QImage, QPixmap, QKeyEvent
-    QT_BACKEND = "PySide6"
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QComboBox, QSlider,
+    QFrame, QSizePolicy,
+)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QColor, QPalette, QImage, QPixmap
 
 import numpy as np
 
@@ -76,7 +65,7 @@ QPushButton#shutter {{
     border-radius: 28px;
     width: 56px;
     height: 56px;
-    font-size: 0px;
+    font-size: 1px;
 }}
 QPushButton#shutter:pressed {{
     background: #CC0000;
@@ -114,11 +103,11 @@ class ParamWidget(QWidget):
 
         self.value_label = QLabel(value)
         self.value_label.setObjectName("param")
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value_label.setAlignment(Qt.AlignCenter)
 
         self.name_label = QLabel(label)
         self.name_label.setObjectName("param_label")
-        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.value_label)
         layout.addWidget(self.name_label)
@@ -151,7 +140,7 @@ class TopHUD(QWidget):
             layout.addWidget(w)
             # 分隔线
             sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.VLine)
+            sep.setFrameShape(QFrame.VLine)
             sep.setStyleSheet("color: rgba(255,255,255,30);")
             layout.addWidget(sep)
 
@@ -290,9 +279,9 @@ class PreviewWidget(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAlignment(Qt.AlignCenter)
         self.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            QSizePolicy.Expanding, QSizePolicy.Expanding
         )
         self.setStyleSheet("background: #111111;")
         self.setText("等待相机...")
@@ -300,11 +289,11 @@ class PreviewWidget(QLabel):
 
     def set_frame(self, frame: np.ndarray):
         h, w, ch = frame.shape
-        img = QImage(frame.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        img = QImage(frame.data, w, h, ch * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(img).scaled(
             self.width(), self.height(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
         )
         self.setPixmap(pixmap)
         self.setStyleSheet("background: #111111;")
@@ -331,6 +320,7 @@ class CameraUI(QMainWindow):
         on_capture: Callable,
         on_quit: Callable,
         dev_mode: bool = False,
+        preview_widget=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -339,6 +329,7 @@ class CameraUI(QMainWindow):
         self.on_capture = on_capture
         self.on_quit = on_quit
         self.dev_mode = dev_mode
+        self._preview_widget = preview_widget
 
         self._setup_window()
         self._setup_ui()
@@ -347,12 +338,8 @@ class CameraUI(QMainWindow):
         self.setWindowTitle("PiCamera2")
 
         if not self.dev_mode:
-            # Pi 模式：全屏透明窗口
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint |
-                Qt.WindowType.WindowStaysOnTopHint
-            )
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            # Pi 模式：全屏无边框窗口
+            self.setWindowFlags(Qt.FramelessWindowHint)
             self.showFullScreen()
         else:
             # Dev 模式：普通窗口
@@ -361,30 +348,28 @@ class CameraUI(QMainWindow):
     def _setup_ui(self):
         central = QWidget()
         central.setObjectName("central")
-        if not self.dev_mode:
-            central.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
         central.setStyleSheet(HUD_STYLE)
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         # 顶部 HUD
         self.top_hud = TopHUD()
         main_layout.addWidget(self.top_hud)
 
-        if self.dev_mode:
-            # Dev 模式：中间预览区
-            self.preview_widget = PreviewWidget()
-            main_layout.addWidget(self.preview_widget, stretch=1)
+        if self._preview_widget is not None:
+            # Pi 模式：QPicamera2 嵌入式预览
+            main_layout.addWidget(self._preview_widget, stretch=1)
+        elif self.dev_mode:
+            # Dev 模式：OpenCV 预览
+            self.cv_preview = PreviewWidget()
+            main_layout.addWidget(self.cv_preview, stretch=1)
         else:
-            # Pi 模式：中间透明，让 GPU 预览透出
             spacer = QWidget()
-            spacer.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             spacer.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                QSizePolicy.Expanding, QSizePolicy.Expanding
             )
             main_layout.addWidget(spacer, stretch=1)
 
@@ -408,7 +393,7 @@ class CameraUI(QMainWindow):
             return
         frame = self.engine.read_frame()
         if frame is not None:
-            self.preview_widget.set_frame(frame)
+            self.cv_preview.set_frame(frame)
 
     # ─── 拍摄 ────────────────────────────────────────────────
 
@@ -419,29 +404,29 @@ class CameraUI(QMainWindow):
 
     # ─── 键盘快捷键 ──────────────────────────────────────────
 
-    def keyPressEvent(self, event: QKeyEvent):
+    def keyPressEvent(self, event):
         key = event.key()
 
-        if key in (Qt.Key.Key_Space, Qt.Key.Key_Return):
+        if key in (Qt.Key_Space, Qt.Key_Return):
             # 空格/回车：拍照
             self._on_capture()
 
-        elif key == Qt.Key.Key_Q or key == Qt.Key.Key_Escape:
+        elif key == Qt.Key_Q or key == Qt.Key_Escape:
             self.on_quit()
 
-        elif key == Qt.Key.Key_Up:
+        elif key == Qt.Key_Up:
             # 上键：增大 ISO
             self._adjust_iso(+1)
 
-        elif key == Qt.Key.Key_Down:
+        elif key == Qt.Key_Down:
             # 下键：减小 ISO
             self._adjust_iso(-1)
 
-        elif key == Qt.Key.Key_Right:
+        elif key == Qt.Key_Right:
             # 右键：快门加速
             self._adjust_shutter(+1)
 
-        elif key == Qt.Key.Key_Left:
+        elif key == Qt.Key_Left:
             # 左键：快门减速
             self._adjust_shutter(-1)
 

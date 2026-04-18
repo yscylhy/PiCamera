@@ -129,11 +129,10 @@ class CameraEngine:
                 "size": self.config.preview_size,
                 "format": "YUV420",
             },
-            display="lores",  # 让 DRM/KMS 显示 lores 流，不走 Python
+            display="lores",
             controls=self._build_controls(),
         )
         cam.configure(preview_config)
-        cam.start()
         self._camera = cam
 
     def _build_controls(self) -> dict:
@@ -231,27 +230,29 @@ class CameraEngine:
     def _capture_csi(self, output_path: str, save_raw: bool):
         """
         picamera2 高质量拍摄：
-        - 先切换到 still 配置（最大分辨率）
-        - 捕获 JPEG + 可选 DNG
+        - 先切换到 still 配置（最大分辨率 + raw 流）
+        - 用 capture_request() 同时捕获 JPEG + DNG
         - 恢复 preview 配置
         """
         cam = self._camera
 
-        # 切换到 still 配置
+        # 切换到 still 配置，带 raw 流（DNG 必须）
         still_config = cam.create_still_configuration(
             main={"size": self.config.still_size, "format": "RGB888"},
+            raw={},
             controls=self._build_controls(),
         )
         cam.switch_mode(still_config)
 
-        # 捕获
-        if save_raw:
-            # capture_file 自动根据扩展名决定格式
-            # .dng 触发 RAW bayer 保存
-            raw_path = output_path.replace(".jpg", ".dng")
-            cam.capture_file(raw_path)
-
-        cam.capture_file(output_path)
+        # 用 capture_request 一次性拿到 JPEG + DNG
+        request = cam.capture_request()
+        try:
+            request.save("main", output_path)
+            if save_raw:
+                raw_path = output_path.replace(".jpg", ".dng")
+                request.save_dng(raw_path)
+        finally:
+            request.release()
 
         # 恢复预览配置
         preview_config = cam.create_preview_configuration(
