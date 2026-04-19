@@ -101,18 +101,27 @@ class CameraApp:
             self._run_pi_drm_only()
             return
 
-        self._setup_display_env()
+        ssh_session = self._setup_display_env()
         has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         if not has_display:
             print("[APP] No display detected, falling back to DrmPreview (no UI overlay)")
             self._run_pi_drm_only()
             return
 
-        # Wayland 环境下需要显式指定 platform，否则 Qt 默认尝试 xcb
-        if os.environ.get("WAYLAND_DISPLAY") and "QT_QPA_PLATFORM" not in os.environ:
+        # picamera2 sets QT_QPA_PLATFORM='xcb' on import; override unconditionally
+        # to wayland whenever a Wayland socket is available.
+        if os.environ.get("WAYLAND_DISPLAY"):
             os.environ["QT_QPA_PLATFORM"] = "wayland"
-            # shm 优先，让 Qt 优雅 fallback 到 wayland-egl（避免 DRI_Mesa 直接 fatal）
-            os.environ.setdefault("QT_WAYLAND_CLIENT_BUFFER_INTEGRATION", "shm")
+
+        # "shm" is an invalid buffer integration name — Qt logs a warning and falls
+        # back to Wayland's wl_shm software path, avoiding the libEGL fatal error
+        # that occurs when Qt auto-detects and tries wayland-egl on Pi.
+        # Required in both SSH and desktop sessions.
+        os.environ.setdefault("QT_WAYLAND_CLIENT_BUFFER_INTEGRATION", "shm")
+
+        # qt5ct platform theme hangs QApplication on Pi's labwc Wayland session.
+        # Our app uses its own QStyleSheet so we don't need the system theme.
+        os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
         self.qt_app = QApplication(sys.argv)
 
@@ -142,8 +151,8 @@ class CameraApp:
 
     
     def _setup_display_env(self):
-        """SSH 等环境下 WAYLAND_DISPLAY 可能没有继承，尝试自动探测"""
-        import pwd
+        """SSH 等环境下 WAYLAND_DISPLAY 可能没有继承，尝试自动探测。
+        返回 True 表示是自动探测到的（SSH 场景），False 表示环境里已有。"""
         uid = os.getuid()
         xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
         if not os.environ.get("XDG_RUNTIME_DIR"):
@@ -154,7 +163,8 @@ class CameraApp:
                 if os.path.exists(os.path.join(xdg, name)):
                     os.environ["WAYLAND_DISPLAY"] = name
                     print(f"[APP] Auto-detected Wayland display: {name}")
-                    break
+                    return True  # 自动探测到
+        return False  # 环境里已有
 
     def _run_pi_drm_only(self):
         self.engine.start()
