@@ -113,17 +113,12 @@ class CameraApp:
         if os.environ.get("WAYLAND_DISPLAY"):
             os.environ["QT_QPA_PLATFORM"] = "wayland"
 
-        # "shm" is an invalid buffer integration name — Qt logs a warning and falls
-        # back to Wayland's wl_shm software path, avoiding the libEGL fatal error
-        # that occurs when Qt auto-detects and tries wayland-egl on Pi.
-        # Required in both SSH and desktop sessions.
-        os.environ.setdefault("QT_WAYLAND_CLIENT_BUFFER_INTEGRATION", "shm")
-
         # qt5ct platform theme hangs QApplication on Pi's labwc Wayland session.
         # Our app uses its own QStyleSheet so we don't need the system theme.
         os.environ.pop("QT_QPA_PLATFORMTHEME", None)
 
         self.qt_app = QApplication(sys.argv)
+        self.qt_app.setAttribute(Qt.AA_SynthesizeMouseForUnhandledTouchEvents, True)
 
         from picamera2.previews.qt import QPicamera2
 
@@ -194,6 +189,7 @@ class CameraApp:
             sys.exit(1)
 
         self.qt_app = QApplication(sys.argv)
+        self.qt_app.setAttribute(Qt.AA_SynthesizeMouseForUnhandledTouchEvents, True)
         self.engine.start()
 
         self.ui = CameraUI(
