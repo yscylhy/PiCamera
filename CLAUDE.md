@@ -59,6 +59,60 @@ The `_setup_display_env()` method auto-detects Wayland sockets under `/run/user/
 - `IS_PI` is `sys.platform in ("linux", "linux2")` — all Pi-specific code paths gate on this.
 - Still size defaults to 4056×3040 (IMX477 HQ Camera max resolution).
 
+## tmux / Wayland Workflow
+
+标准工作流：在树莓派本地启动 tmux 并运行 Claude Code，Mac 通过 SSH attach 同一个 session 进行远程操作：
+
+```bash
+# 树莓派本地（或第一次连接时）
+tmux new -s dev
+claude
+
+# Mac 上 SSH 连接后 attach
+ssh pi@10.0.0.197
+tmux attach -t dev
+```
+
+这样 Claude Code 和所有子命令都在树莓派本地运行，Wayland 窗口可以正常显示在树莓派屏幕上。
+
+tmux 不继承桌面的 Wayland 环境变量，所有需要显示窗口的命令都必须手动加以下前缀：
+
+```bash
+WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000
+```
+
+### rpicam-hello 预览摄像头
+
+```bash
+WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 QT_QPA_PLATFORM=wayland rpicam-hello --qt-preview -t 0
+```
+
+- `--qt-preview`：强制使用 Qt 窗口（默认的 EGL/DRM 后端在此环境下不可用）
+- `-t 0`：不超时，一直运行直到 Ctrl+C
+- 必须在 tmux pane 里直接输入运行，不能通过 Claude Code 的 `!` 前缀执行（`!` 的子 shell 与 Wayland socket 连接不稳定）
+
+### 永久解决（可选）
+
+在 `~/.bashrc` 末尾添加：
+
+```bash
+export WAYLAND_DISPLAY=wayland-0
+export XDG_RUNTIME_DIR=/run/user/1000
+```
+
+这样 tmux 新开的 pane 会自动继承，无需每次手动加前缀。
+
+### 摄像头被占用排查
+
+如果出现 `failed to acquire camera`，查找占用进程：
+
+```bash
+fuser /dev/video*
+ps aux | grep -E "python|picamera|rpicam"
+```
+
+然后 `kill <PID>` 释放。
+
 ## Keyboard Shortcuts
 
 | Key | Action |
