@@ -120,9 +120,11 @@ class CameraEngine:
         # 双流配置
         # preview 流分辨率对应屏幕分辨率（4寸屏通常 800x480 或 1024x600）
         # 如果 4K 显示器则设 3840x2160
+        controls = self._build_controls()
+        controls["FrameRate"] = 30  # half-res sensor mode supports 30fps; full-res caps at 10fps
         preview_config = cam.create_preview_configuration(
             main={
-                "size": self.config.still_size,
+                "size": (2028, 1520),
                 "format": "RGB888",
             },
             lores={
@@ -130,7 +132,7 @@ class CameraEngine:
                 "format": "YUV420",
             },
             display="lores",
-            controls=self._build_controls(),
+            controls=controls,
         )
         cam.configure(preview_config)
         self._camera = cam
@@ -255,11 +257,13 @@ class CameraEngine:
             request.release()
 
         # 恢复预览配置
+        controls = self._build_controls()
+        controls["FrameRate"] = 30
         preview_config = cam.create_preview_configuration(
-            main={"size": self.config.still_size, "format": "RGB888"},
+            main={"size": (2028, 1520), "format": "RGB888"},
             lores={"size": self.config.preview_size, "format": "YUV420"},
             display="lores",
-            controls=self._build_controls(),
+            controls=controls,
         )
         cam.switch_mode(preview_config)
 
@@ -295,8 +299,8 @@ class CameraEngine:
 
     def _metadata_loop(self):
         """
-        每秒从 picamera2 读取一次 metadata，更新 CameraState。
-        metadata 包含实际的 ExposureTime、AnalogueGain、ColourGains 等。
+        持续从 picamera2 读取 metadata，更新 CameraState。
+        capture_metadata() 阻塞直到下一帧到达，自然限速到相机帧率，无需额外 sleep。
         """
         _fps_frames = 0
         _fps_ts = time.time()
@@ -311,7 +315,6 @@ class CameraEngine:
                     gains = meta.get("ColourGains", (1.0, 1.0))
                     self.state.actual_awb_gains = gains
 
-                    # 估算 fps
                     _fps_frames += 1
                     now = time.time()
                     elapsed = now - _fps_ts
@@ -319,8 +322,8 @@ class CameraEngine:
                         self.state.fps = _fps_frames / elapsed
                         _fps_frames = 0
                         _fps_ts = now
+                else:
+                    time.sleep(0.1)
 
             except Exception:
-                pass
-
-            time.sleep(0.1)
+                time.sleep(0.1)

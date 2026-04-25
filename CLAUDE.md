@@ -52,6 +52,21 @@ The `_setup_display_env()` method auto-detects Wayland sockets under `/run/user/
 - `PreviewWidget`: dev mode only — converts numpy RGB array to `QPixmap`
 - Keyboard: Space/Enter = capture, Q/Esc = quit, ↑↓ = ISO, ←→ = shutter speed
 
+## 预览延迟 / 果冻感排查
+
+**根本原因**：preview 配置的 `main` 流分辨率决定传感器模式，进而决定帧率上限。
+
+| 配置 | 传感器模式 | 帧率 |
+|------|-----------|------|
+| main = 4056×3040（原始错误配置） | 全分辨率 | ~10fps |
+| main = 2028×1520 + 无 FrameRate | 半分辨率 | ~16fps |
+| main = 2028×1520 + FrameRate=30 | 半分辨率 | 30fps ✓ |
+
+**结论**：
+- preview 时 `main` 流只需设为 `2028x1520`（半分辨率），display 用 `lores`，视觉质量无损
+- 必须在 controls 里显式指定 `FrameRate: 30`，否则 picamera2 默认会限速
+- 拍摄时切换到 `still_configuration` 仍使用 `4056x3040` 全分辨率，画质不受影响
+
 ## Key Behavioral Details
 
 - On Pi, preview frames never pass through Python — libcamera ISP sends them directly to a DRM KMS plane. `read_frame()` on CSI calls `capture_array("main")` which is a separate software capture, not the live preview.
