@@ -117,6 +117,33 @@ export XDG_RUNTIME_DIR=/run/user/1000
 
 这样 tmux 新开的 pane 会自动继承，无需每次手动加前缀。
 
+### 屏幕旋转（横竖屏切换）
+
+屏幕物理分辨率为 480×800（竖屏），通过 Compositor 层旋转实现横屏显示。
+GPU 直通预览会跟着整体旋转，无需修改代码。
+
+查看当前输出和旋转状态：
+```bash
+WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 wlr-randr
+```
+
+输出名为 `HDMI-A-1`，Transform 含义：
+
+| Transform 值 | 效果 |
+|-------------|------|
+| 0 | 原始竖屏（480×800） |
+| 90 | 逆时针旋转（横屏 800×480）✓ 当前设置 |
+| 180 | 倒置竖屏 |
+| 270 | 顺时针旋转（横屏） |
+
+切换横屏（800×480）：
+```bash
+WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 wlr-randr --output HDMI-A-1 --transform 90
+```
+
+注意：IMX477 硬件不支持需要转置的旋转（90°/270°），`rpicam-hello --rotation 90` 会报错
+`transforms requiring transpose not supported`，必须在 Compositor 层处理。
+
 ### 摄像头被占用排查
 
 如果出现 `failed to acquire camera`，查找占用进程：
@@ -126,7 +153,11 @@ fuser /dev/video*
 ps aux | grep -E "python|picamera|rpicam"
 ```
 
-然后 `kill <PID>` 释放。
+然后 `kill <PID>` 释放，或一步到位：
+
+```bash
+fuser -k /dev/video*
+```
 
 ## Keyboard Shortcuts
 
