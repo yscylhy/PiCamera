@@ -336,6 +336,7 @@ class CameraUI(QMainWindow):
 
     def _setup_window(self):
         self.setWindowTitle("PiCamera2")
+        self.setAttribute(Qt.WA_AcceptTouchEvents, True)
 
         if not self.dev_mode:
             # Pi 模式：全屏无边框窗口

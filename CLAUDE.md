@@ -159,6 +159,44 @@ ps aux | grep -E "python|picamera|rpicam"
 fuser -k /dev/video*
 ```
 
+### 触摸屏驱动（ADS7846 / XPT2046）
+
+Miuzei 4寸电阻触摸屏，控制器走 SPI。系统重装后需确认 `/boot/firmware/config.txt` 末尾有：
+
+```
+dtparam=spi=on
+dtoverlay=ads7846,cs=1,penirq=25,penirq_pull=2,speed=50000,pmax=255,xohms=150
+```
+
+验证驱动加载成功：
+```bash
+cat /proc/bus/input/devices | grep -A 3 "ADS7846"
+# 应看到 Handlers=mouse* event*
+```
+
+labwc 配置（`~/.config/labwc/rc.xml`）已设置触摸模拟鼠标：
+```xml
+<touch deviceName="ADS7846 Touchscreen" mapToOutput="HDMI-A-1" mouseEmulation="yes"/>
+```
+
+**注意：不要 `killall labwc`**，会导致触摸设备内核事件卡死，只能重启恢复。
+
+### 触摸屏在 app 内不工作排查
+
+如果桌面触摸正常但 app 内无反应，检查 Qt 是否强制了错误的 Wayland buffer integration。
+`QT_WAYLAND_CLIENT_BUFFER_INTEGRATION=shm` 在本机 Wayland session 下会干扰输入处理，应移除。
+
+### 相机排线松动
+
+用力按压触摸屏可能震动导致 CSI 排线松脱，症状为：
+
+```
+Camera frontend has timed out!
+Please check that your camera sensor connector is attached securely.
+```
+
+处理：断电 → 重插 CSI 排线两端锁扣 → 开机。
+
 ## Keyboard Shortcuts
 
 | Key | Action |
