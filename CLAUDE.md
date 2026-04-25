@@ -186,6 +186,47 @@ labwc 配置（`~/.config/labwc/rc.xml`）已设置触摸模拟鼠标：
 如果桌面触摸正常但 app 内无反应，检查 Qt 是否强制了错误的 Wayland buffer integration。
 `QT_WAYLAND_CLIENT_BUFFER_INTEGRATION=shm` 在本机 Wayland session 下会干扰输入处理，应移除。
 
+### USB 演示遥控器（激光笔）
+
+触摸屏老化后改用 USB 演示遥控器（三键：上一页、下一页、激光）控制 app。
+
+遥控器硬件特性：每次按键只发一个 7~27ms 的 press+release，不产生 auto-repeat，**不支持长按检测**。
+
+#### 两键状态机交互设计
+
+三个模式，全部实现在 `ui.py` `CameraUI` 的 `keyPressEvent` 中：
+
+```
+NORMAL  → Page Down = 拍照
+        → Page Up   = 进入 MENU（聚焦 ISO）
+
+MENU    → Page Up   = 循环聚焦 ISO → SHUTTER → AWB → 退出回 NORMAL
+        → Page Down = 进入 ADJUST 模式
+
+ADJUST  → Page Down         = 参数 -1 步
+        → Page Up（单击）   = 参数 +1 步（立即执行）
+        → Page Up（双击，300ms内）= 先 -1 撤销，再退回 MENU
+        → 无操作 8s         = 自动退回 NORMAL
+```
+
+#### 视觉反馈
+
+- **MENU 模式**：底部控制栏对应参数组显示白色边框
+- **ADJUST 模式**：边框变青色（`#00FFCC`），同时在底部控制栏上方弹出 `OptionStrip` 横向展示所有选项，当前值金色高亮
+- MENU / ADJUST 退出后 OptionStrip 自动隐藏
+
+#### 关键实现细节
+
+- 键盘事件通过 `QApplication.installEventFilter` 拦截，确保任何子控件有焦点时遥控器都能响应
+- `_adjust_*` 方法更新 combo 时使用 `blockSignals(True/False)`，防止 combo 回调以不精确的值（如 `1_000_000 // 60 = 16666`）覆盖步进表中的精确值（`16000`），避免 index 丢失导致快门范围被截断
+- 双击检测：第一次 Page Up 立即执行 +1 并启动 300ms 计时；第二次按到则 -1 撤销并退出，净变化为零
+
+| 遥控器按键 | 发送键码 | App 动作 |
+|-----------|---------|---------|
+| 上一页 | `Page Up` | 参数调节 / 双击退出 |
+| 下一页 | `Page Down` | 拍照 / 参数 -1 |
+| 激光 | 无键码 | — |
+
 ### 相机排线松动
 
 用力按压触摸屏可能震动导致 CSI 排线松脱，症状为：

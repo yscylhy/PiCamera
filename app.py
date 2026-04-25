@@ -134,7 +134,7 @@ class CameraApp:
             on_quit=self.shutdown,
             preview_widget=preview_widget,
         )
-        self.ui.show()
+        self.ui.showFullScreen()
 
         camera.start()
 
