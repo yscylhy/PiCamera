@@ -13,6 +13,10 @@ ui.py — CameraUI
 """
 
 import sys
+import os
+import struct
+import threading
+import glob
 from enum import Enum, auto
 from typing import Optional, Callable
 from pathlib import Path
@@ -386,9 +390,11 @@ class CameraUI(QMainWindow):
 
     遥控器两键状态机：
       NORMAL  → PageDown=拍照, PageUp=进MENU
-      MENU    → PageUp=循环参数, PageDown=进ADJUST
-      ADJUST  → PageUp=+1步, PageDown=-1步, 双击PageUp=回MENU
+
+    蓝牙自拍杆：AB Shutter3 发 KEY_VOLUMEUP，经 evdev 线程捕获后触发拍照。
     """
+
+    _bt_shutter_signal = pyqtSignal()
 
     def __init__(
         self,
@@ -427,6 +433,49 @@ class CameraUI(QMainWindow):
         # 应用层事件过滤器：无论哪个子控件有焦点，按键都经过此处
         from PyQt5.QtWidgets import QApplication
         QApplication.instance().installEventFilter(self)
+
+        # 蓝牙自拍杆：绕过 Wayland 音量键拦截，直接读 evdev
+        self._bt_shutter_signal.connect(self._on_capture)
+        self._start_bt_listener()
+
+    def _find_bt_shutter_device(self):
+        """扫描 /dev/input/event* 找 AB Shutter3 Consumer Control 设备"""
+        for path in sorted(glob.glob('/dev/input/event*')):
+            try:
+                name_path = f'/sys/class/input/{os.path.basename(path)}/device/name'
+                with open(name_path) as f:
+                    name = f.read().strip()
+                if 'Shutter' in name and 'Consumer' in name:
+                    return path
+            except Exception:
+                continue
+        return None
+
+    def _start_bt_listener(self):
+        dev = self._find_bt_shutter_device()
+        if not dev:
+            print('[BT] AB Shutter3 not found, skipping listener')
+            return
+        print(f'[BT] Listening on {dev}')
+        t = threading.Thread(target=self._bt_listener_loop, args=(dev,), daemon=True)
+        t.start()
+
+    def _bt_listener_loop(self, dev_path):
+        # struct input_event: timeval(8+8) + type(2) + code(2) + value(4) = 24 bytes
+        FMT = 'llHHi'
+        SIZE = struct.calcsize(FMT)
+        EV_KEY, KEY_VOLUMEUP, KEY_PRESS = 1, 115, 1
+        try:
+            with open(dev_path, 'rb') as f:
+                while True:
+                    data = f.read(SIZE)
+                    if len(data) < SIZE:
+                        break
+                    _, _, etype, code, value = struct.unpack(FMT, data)
+                    if etype == EV_KEY and code == KEY_VOLUMEUP and value == KEY_PRESS:
+                        self._bt_shutter_signal.emit()
+        except Exception as e:
+            print(f'[BT] Listener error: {e}')
 
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
