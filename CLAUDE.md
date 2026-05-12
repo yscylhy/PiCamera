@@ -227,6 +227,29 @@ ADJUST  → Page Down         = 参数 -1 步
 | 下一页 | `Page Down` | 拍照 / 参数 -1 |
 | 激光 | 无键码 | — |
 
+### J09 蓝牙触摸板
+
+J09 设备有两个 input 节点：
+
+| 节点 | 名称 | 内容 |
+|------|------|------|
+| `/dev/input/event9` | `J09` | 触摸板（ABS_X/Y + BTN_TOUCH） |
+| `/dev/input/event8` | `J09 Consumer Control` | 三个物理按键 |
+
+三个按键键码：
+
+| 按键 | 键码 | 常量 |
+|------|------|------|
+| I | 158 | `KEY_BACK` |
+| O | 114 | `KEY_VOLUMEDOWN` |
+| II | 142 | `KEY_SLEEP` |
+
+`j09_touchpad.py` 负责监听 `event9`，将绝对坐标转换为相对位移，创建虚拟鼠标。运行需要 `sudo`：
+
+```bash
+sudo python j09_touchpad.py
+```
+
 ### 相机排线松动
 
 用力按压触摸屏可能震动导致 CSI 排线松脱，症状为：

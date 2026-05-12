@@ -192,7 +192,7 @@ class TopHUD(QWidget):
 
 class OptionStrip(QWidget):
     """
-    ADJUST 模式下在底部控制栏上方展开的参数选项条。
+    ADJUST 模式下浮动显示的竖向参数选项条，定位在当前参数上方。
     显示当前参数的所有可选值，当前值用金色高亮。
     """
 
@@ -201,50 +201,62 @@ class OptionStrip(QWidget):
         self.setStyleSheet(
             "background: rgba(0,0,0,210); border-radius: 6px;"
         )
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 6, 12, 4)
-        outer.setSpacing(2)
-
-        self._title_label = QLabel("")
-        self._title_label.setStyleSheet(
-            f"color: {HUD_DIM}; font-size: 10px; letter-spacing: 2px;"
-        )
-        self._title_label.setAlignment(Qt.AlignCenter)
-        outer.addWidget(self._title_label)
-
-        self._options_row = QHBoxLayout()
-        self._options_row.setContentsMargins(0, 0, 0, 0)
-        self._options_row.setSpacing(0)
-        outer.addLayout(self._options_row)
+        self._options_col = QVBoxLayout(self)
+        self._options_col.setContentsMargins(10, 6, 10, 6)
+        self._options_col.setSpacing(2)
 
         self._option_labels: list[QLabel] = []
         self._current_idx = 0
+        self._anchor = None
         self.hide()
 
-    def show_options(self, title: str, options: list[str], current_idx: int):
-        # 清空旧内容
+    def show_options(self, options: list[str], current_idx: int, anchor_widget=None):
+        # 清空旧选项
         for lbl in self._option_labels:
             lbl.setParent(None)
         self._option_labels.clear()
-        while self._options_row.count():
-            item = self._options_row.takeAt(0)
+        while self._options_col.count():
+            item = self._options_col.takeAt(0)
             if item.widget():
                 item.widget().setParent(None)
 
-        self._title_label.setText(title)
-        self._options_row.addStretch()
         for opt in options:
             lbl = QLabel(opt)
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setContentsMargins(8, 0, 8, 0)
+            lbl.setContentsMargins(8, 1, 8, 1)
             self._option_labels.append(lbl)
-            self._options_row.addWidget(lbl)
-        self._options_row.addStretch()
+            self._options_col.addWidget(lbl)
 
         self._current_idx = current_idx
         self._refresh_styles()
+        # 根据最长选项 + 16px bold 字体计算所需宽度
+        from PyQt5.QtGui import QFont, QFontMetrics
+        font = QFont(self.font())
+        font.setPointSize(16)
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        max_text_w = max((fm.horizontalAdvance(opt) for opt in options), default=0)
+        self.setMinimumWidth(max_text_w + 36)
+        self.adjustSize()
+
+        if anchor_widget is not None:
+            self._anchor = anchor_widget
+            self._position_above_anchor()
+
         self.show()
+        self.raise_()
+
+    def _position_above_anchor(self):
+        if self._anchor is None or self.parent() is None:
+            return
+        anchor_top = self._anchor.mapTo(self.parent(), self._anchor.rect().topLeft())
+        x = anchor_top.x() + (self._anchor.width() - self.width()) // 2
+        y = anchor_top.y() - self.height() - 6
+        x = max(4, min(self.parent().width() - self.width() - 4, x))
+        y = max(4, y)
+        self.move(x, y)
 
     def set_current(self, idx: int):
         self._current_idx = idx
@@ -254,11 +266,11 @@ class OptionStrip(QWidget):
         for i, lbl in enumerate(self._option_labels):
             if i == self._current_idx:
                 lbl.setStyleSheet(
-                    f"color: {HUD_ACCENT}; font-size: 17px; font-weight: bold;"
+                    f"color: {HUD_ACCENT}; font-size: 16px; font-weight: bold;"
                 )
             else:
                 lbl.setStyleSheet(
-                    "color: rgba(255,255,255,90); font-size: 12px;"
+                    "color: rgba(255,255,255,100); font-size: 11px;"
                 )
 
 
@@ -328,6 +340,9 @@ class BottomControls(QWidget):
         row.addWidget(lbl)
         row.addWidget(combo)
         return frame
+
+    def get_param_group(self, idx: int) -> QFrame:
+        return self._param_groups[idx]
 
     def set_focused(self, param_idx: Optional[int], border_color: Optional[str] = None):
         """高亮聚焦的参数组；param_idx=None 清除所有高亮"""
@@ -515,13 +530,12 @@ class CameraUI(QMainWindow):
             spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             main_layout.addWidget(spacer, stretch=1)
 
-        # 选项展开条（ADJUST 模式时显示，默认隐藏）
-        self.option_strip = OptionStrip()
-        main_layout.addWidget(self.option_strip)
-
         self.bottom_controls = BottomControls(engine=self.engine)
         self.bottom_controls.capture_pressed.connect(self._on_capture)
         main_layout.addWidget(self.bottom_controls)
+
+        # 浮动选项条，作为 central 的直接子组件，绝对定位在当前参数上方
+        self.option_strip = OptionStrip(parent=central)
 
     # ─── 刷新方法（由 QTimer 调用）──────────────────────────
 
@@ -549,31 +563,34 @@ class CameraUI(QMainWindow):
     def keyPressEvent(self, event):
         key = event.key()
 
+        if key in (Qt.Key_VolumeDown, Qt.Key_F2):
+            self._on_capture()
+            return
+
         if self._ui_mode == UIMode.NORMAL:
             if key == Qt.Key_PageDown:
                 self._on_capture()
-            elif key == Qt.Key_PageUp:
+            elif key in (Qt.Key_PageUp, Qt.Key_Back, Qt.Key_F1):
                 self._enter_menu()
             elif key in (Qt.Key_Space, Qt.Key_Return):
                 self._on_capture()
             elif key in (Qt.Key_Q, Qt.Key_Escape):
                 self.on_quit()
-            elif key == Qt.Key_Up:
-                self._adjust_iso(+1)
-            elif key == Qt.Key_Down:
-                self._adjust_iso(-1)
-            elif key == Qt.Key_Right:
-                self._adjust_shutter(+1)
-            elif key == Qt.Key_Left:
-                self._adjust_shutter(-1)
             else:
                 super().keyPressEvent(event)
 
         elif self._ui_mode == UIMode.MENU:
             if key == Qt.Key_PageUp:
                 self._menu_cycle()
-            elif key == Qt.Key_PageDown:
+            elif key in (Qt.Key_PageDown, Qt.Key_Back, Qt.Key_F1):
                 self._enter_adjust()
+            elif key == Qt.Key_Right:
+                self._menu_param_next()
+            elif key == Qt.Key_Left:
+                self._menu_param_prev()
+            elif key in (Qt.Key_Sleep, Qt.Key_F3, Qt.Key_Escape):
+                self._exit_to_normal()
+                return
             else:
                 super().keyPressEvent(event)
             self._reset_mode_timer(5000)
@@ -581,13 +598,11 @@ class CameraUI(QMainWindow):
         elif self._ui_mode == UIMode.ADJUST:
             if key == Qt.Key_PageUp:
                 if not self._pageup_pending:
-                    # 第一次：立即 +1，开 300ms 窗口等第二次
                     self._adjust_selected(+1)
                     self._reset_mode_timer(8000)
                     self._pageup_pending = True
                     self._single_click_timer.start(300)
                 else:
-                    # 第二次：-1 撤销，退回 MENU
                     self._single_click_timer.stop()
                     self._pageup_pending = False
                     self._adjust_selected(-1)
@@ -595,6 +610,16 @@ class CameraUI(QMainWindow):
             elif key == Qt.Key_PageDown:
                 self._adjust_selected(-1)
                 self._reset_mode_timer(8000)
+            elif key == Qt.Key_Up:
+                self._adjust_selected(-1)
+                self._reset_mode_timer(8000)
+            elif key == Qt.Key_Down:
+                self._adjust_selected(+1)
+                self._reset_mode_timer(8000)
+            elif key in (Qt.Key_Sleep, Qt.Key_F3, Qt.Key_Back, Qt.Key_F1):
+                self._exit_to_menu()
+            elif key == Qt.Key_Escape:
+                self._exit_to_normal()
             else:
                 super().keyPressEvent(event)
 
@@ -617,14 +642,23 @@ class CameraUI(QMainWindow):
         else:
             self.bottom_controls.set_focused(self._menu_idx, HUD_SELECT)
 
+    def _menu_param_next(self):
+        self._menu_idx = (self._menu_idx + 1) % len(_PARAM_TITLES)
+        self.bottom_controls.set_focused(self._menu_idx, HUD_SELECT)
+
+    def _menu_param_prev(self):
+        self._menu_idx = (self._menu_idx - 1) % len(_PARAM_TITLES)
+        self.bottom_controls.set_focused(self._menu_idx, HUD_SELECT)
+
     def _enter_adjust(self):
         self._ui_mode = UIMode.ADJUST
         self.bottom_controls.set_focused(self._menu_idx, HUD_ADJUST)
         idx = self._current_option_idx(self._menu_idx)
+        anchor = self.bottom_controls.get_param_group(self._menu_idx)
         self.option_strip.show_options(
-            _PARAM_TITLES[self._menu_idx],
             _STRIP_OPTIONS[self._menu_idx],
             idx,
+            anchor_widget=anchor,
         )
         self._reset_mode_timer(8000)
 
