@@ -45,9 +45,70 @@ python main.py --preview-size 800x480
 | 按键 | 功能 |
 |------|------|
 | 空格 / 回车 | 拍照 |
-| ↑ / ↓ | 调整 ISO |
-| ← / → | 调整快门速度 |
 | Q / Esc | 退出 |
+
+## J09 蓝牙触摸板控制
+
+J09 设备有一个小触摸板和三个物理按键（I / O / II），通过 `j09_touchpad.py`
+守护进程接入系统。该脚本会：
+
+- grab `event9`（触摸板），手指滑动按位移识别为方向键，tap 转为鼠标左键单击
+- grab `event8`（按键），把 KEY_BACK/KEY_VOLUMEDOWN/KEY_SLEEP 映射为 F1/F2/F3（绕过 Wayland 媒体键拦截）
+- `--app-mode` 模式下关闭鼠标光标移动，仅保留手势 → 方向键 + tap
+
+启动：
+
+```bash
+sudo python j09_touchpad.py --app-mode &
+python main.py
+```
+
+### 三模式状态机
+
+应用有 NORMAL / MENU / ADJUST 三个模式，由 `ui.py` `CameraUI.keyPressEvent` 管理。
+
+| 操作 | NORMAL | MENU（白边框） | ADJUST（青边框 + 浮动竖向选项条） |
+|------|--------|---------------|-----------------------------------|
+| **O**（F2） | 拍照 | 拍照 | 拍照 |
+| **I**（F1） | → MENU | → ADJUST | → MENU |
+| **II**（F3） | — | → NORMAL | → MENU |
+| **左/右滑** | — | 切换参数 | — |
+| **上/下滑** | — | — | 当前参数 ±1 步 |
+| **tap** | 鼠标左键单击（如未在 `--app-mode`） |  |  |
+
+工作流：I 进 MENU → 左右滑切到目标参数 → I 进 ADJUST → 上下滑调值 → II/I 回 MENU → 继续切换或 II 回 NORMAL。
+
+### 视觉反馈
+
+- **MENU**：底部参数组白色边框
+- **ADJUST**：边框变青色（`#00FFCC`），同时在当前参数**正上方**浮出竖向选项条，当前值金色加粗高亮。条宽根据最长选项动态计算，长字符（如 `FLUORESCENT`）不会截断
+- 退出 ADJUST/MENU 时选项条隐藏
+
+### 触摸板手势细节
+
+`j09_touchpad.py` 中：
+
+- `SPEED = 0.1`：鼠标模式下光标速度
+- `TAP_MAX_MS = 150` + `TAP_MAX_DIST = 10`：tap 判定阈值
+- `SWIPE_MIN_DIST = 80`：滑动手势最小位移（触摸板范围 0-4095，约 2%）
+- 判定时机：**手指抬起瞬间**，根据起点-终点 X/Y 位移决定方向；位移绝对值大的轴胜出
+- 支持单轴滑动（只 X 或只 Y 动也能识别）
+
+### 清理残留进程
+
+`j09_touchpad.py` 被 Ctrl+Z 挂起时设备会被独占，常见症状是再次启动报
+`grab failed: [Errno 16] Device or resource busy`：
+
+```bash
+sudo fuser -k /dev/input/event8 /dev/input/event9
+sudo pkill -9 -f j09_touchpad.py
+```
+
+或加 alias：
+
+```bash
+alias kilj09='sudo fuser -k /dev/input/event8 /dev/input/event9 2>/dev/null; sudo pkill -9 -f j09_touchpad.py 2>/dev/null; true'
+```
 
 ## 开机自启（systemd）
 
