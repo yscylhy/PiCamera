@@ -12,6 +12,7 @@ j09_touchpad.py — J09 蓝牙触摸板转发守护进程
   II (KEY_SLEEP=142)      → KEY_F3
 
 滑动手势（位移 >= SWIPE_MIN_DIST）→ 方向键
+连续两次右滑（间隔 ≤ DOUBLE_RIGHT_WINDOW 秒）→ KEY_F4
 鼠标移动在 --app-mode 下禁用
 """
 
@@ -28,6 +29,11 @@ TAP_MAX_DIST = 10
 SWIPE_MIN_DIST = 80
 # 当两轴位移接近时偏向水平判定（手指自然滑动常带 Y 抖动）
 H_BIAS = 0.7
+
+# 双击右滑手势：两次右滑间隔 ≤ DOUBLE_RIGHT_WINDOW 秒 → 额外发一个 F4
+# 单次右滑不再延迟，立即发出 KEY_RIGHT。第二次右滑时同样立即发 RIGHT，再补一个 F4。
+# F4 是否生效由 app 自行判断（仅在 CAMERA NORMAL / ALBUM 状态下处理）。
+DOUBLE_RIGHT_WINDOW = 0.5
 
 BTN_MAP = {
     ecodes.KEY_BACK:        ecodes.KEY_F1,
@@ -60,7 +66,7 @@ def create_virtual_keyboard():
         ecodes.EV_KEY: [
             ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
             ecodes.KEY_UP, ecodes.KEY_DOWN,
-            ecodes.KEY_F1, ecodes.KEY_F2, ecodes.KEY_F3,
+            ecodes.KEY_F1, ecodes.KEY_F2, ecodes.KEY_F3, ecodes.KEY_F4,
         ],
     }
     return UInput(cap, name='J09 Virtual Keyboard', version=0x1)
@@ -83,6 +89,7 @@ def run_once(src_touch, src_btn, vdev_mouse, vdev_kbd, app_mode=False):
     touch_start_x = None
     touch_start_y = None
     touch_max_dist = 0
+    last_right_at = 0.0  # 上一次右滑的 monotonic 时间，用于检测双击
 
     fds = [src_touch.fd, src_btn.fd]
 
@@ -121,10 +128,27 @@ def run_once(src_touch, src_btn, vdev_mouse, vdev_kbd, app_mode=False):
                                 dy = (prev_y - touch_start_y) if (touch_start_y is not None and prev_y is not None) else 0
                                 dist = max(abs(dx), abs(dy))
 
-                                if dist >= SWIPE_MIN_DIST:
+                                is_right_swipe = (
+                                    dist >= SWIPE_MIN_DIST
+                                    and abs(dx) >= abs(dy)
+                                    and dx > 0
+                                )
+
+                                if is_right_swipe:
+                                    now = time.monotonic()
+                                    gap = now - last_right_at
+                                    print(f'[J09] swipe RIGHT dx={dx} dy={dy} dur={duration_ms:.0f}ms', flush=True)
+                                    emit_key(vdev_kbd, ecodes.KEY_RIGHT)
+                                    if gap <= DOUBLE_RIGHT_WINDOW:
+                                        print(f'[J09] double-right gap={gap*1000:.0f}ms → F4', flush=True)
+                                        emit_key(vdev_kbd, ecodes.KEY_F4)
+                                        last_right_at = 0.0  # 防止三连击当成第二个双击
+                                    else:
+                                        last_right_at = now
+                                elif dist >= SWIPE_MIN_DIST:
                                     if abs(dx) >= abs(dy):
-                                        key = ecodes.KEY_RIGHT if dx > 0 else ecodes.KEY_LEFT
-                                        kname = 'RIGHT' if dx > 0 else 'LEFT'
+                                        key = ecodes.KEY_LEFT
+                                        kname = 'LEFT'
                                     else:
                                         key = ecodes.KEY_DOWN if dy > 0 else ecodes.KEY_UP
                                         kname = 'DOWN' if dy > 0 else 'UP'

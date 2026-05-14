@@ -244,11 +244,86 @@ J09 设备有两个 input 节点：
 | O | 114 | `KEY_VOLUMEDOWN` |
 | II | 142 | `KEY_SLEEP` |
 
-`j09_touchpad.py` 负责监听 `event9`，将绝对坐标转换为相对位移，创建虚拟鼠标。运行需要 `sudo`：
+`j09_touchpad.py` 负责监听 `event9`，将绝对坐标转换为相对位移，创建虚拟鼠标。
+开机由 systemd 服务 `j09-touchpad.service` 自动拉起（以 root + `--app-mode`），
+unit 文件在 `/etc/systemd/system/j09-touchpad.service`。
+
+调试时手动操作：
 
 ```bash
-sudo python j09_touchpad.py
+sudo systemctl stop j09-touchpad        # 停服务
+sudo python j09_touchpad.py --app-mode  # 前台跑
+sudo systemctl start j09-touchpad       # 恢复
+sudo journalctl -u j09-touchpad -f      # 跟踪日志
 ```
+
+注意：主 app 由 labwc autostart 启动（用户态，继承 Wayland 环境），J09 守护进程
+由 systemd 启动（root，无 Wayland）—— 两条独立启动链。
+
+#### 双击右滑手势
+
+`j09_touchpad.py` 在触摸释放时按以下优先级判定：
+
+1. **滑动**（位移 ≥ 80）→ 方向键，**立即发出，无延迟**。
+   - 右滑额外检测：与上一次右滑间隔 ≤ `DOUBLE_RIGHT_WINDOW`（500ms）→ 在 `KEY_RIGHT`
+     之后再追发一个 `KEY_F4`。所以双击右滑时 app 会先收到两次 RIGHT，再收到一个 F4。
+2. **点击** → `BTN_LEFT`（时长 < 150ms 且位移 < 10）。
+
+`F4` 是否生效由 app 自行判断：`ui.py` `keyPressEvent` 在 `AppMode.CAMERA` 且
+`UIMode != NORMAL`（即正在 MENU 调参 / ADJUST 步进）时忽略 F4，避免误触跳转到相册。
+其他状态（CAMERA NORMAL、ALBUM_GRID/SINGLE/CONFIRM）正常处理 F4 切换。
+
+原圆圈手势检测因不稳定已移除。
+
+### 相册模式
+
+主 app 三层模式：`CAMERA` → `ALBUM_GRID` → `ALBUM_SINGLE` → `ALBUM_DELETE_CONFIRM`。
+状态由 `ui.py` `CameraUI._app_mode`（`AppMode` 枚举）管理，与原有的 `UIMode`（CAMERA 内的
+NORMAL/MENU/ADJUST 子状态）独立。
+
+```
+CAMERA  → 双击右滑(F4)    = 进 ALBUM_GRID
+ALBUM_GRID
+        → I(F1)           = 上一张高亮（跨页）
+        → II(F3)          = 下一张高亮（跨页）
+        → O(F2)           = 选中 → ALBUM_SINGLE
+        → 双击右滑(F4)    = 回 CAMERA
+ALBUM_SINGLE
+        → I/II(F1/F3)     = 弹删除确认 → ALBUM_DELETE_CONFIRM
+        → O(F2)           = 回 ALBUM_GRID
+        → 双击右滑(F4)    = 回 CAMERA
+ALBUM_DELETE_CONFIRM
+        → O(F2)           = 确认删除（删 .jpg + 同名 .dng）→ ALBUM_GRID
+        → I/II(F1/F3)     = 取消 → ALBUM_SINGLE
+        → 双击右滑(F4)    = 回 CAMERA
+```
+
+#### 实现要点
+
+- **顶层布局**：`CameraUI` 的 central 包一个 `QStackedWidget`，page 0 = camera_page（TopHUD +
+  preview + BottomControls），page 1 = `AlbumView`。F4 触发时切 stack index。
+- **AlbumView 内部**：又一个 `QStackedWidget`，page 0 = GRID（`QGridLayout` 4×3 缩略图），
+  page 1 = SINGLE。删除确认是 SINGLE 上的浮动 `QLabel`，居中绝对定位。
+- **缩略图解码**：用 `QImageReader.setScaledSize()` 调用 libjpeg 的 IDCT 缩放，4K JPEG 不走
+  完整解码，单张约 50-100ms。
+- **照片排序**：按 mtime 倒序，新照片在前。
+- **删除**：`Path.unlink(missing_ok=True)`，同时尝试删除同名 `.dng`。
+- **OptionStrip parent**：从 central 改成 camera_page，确保 absolute positioning 在切到
+  album 时不会显示在错误位置。
+
+#### 键盘调试别名
+
+无 J09 时键盘测试映射（`CameraUI._DEBUG_KEY_ALIAS`）：
+
+| 键盘 | J09 | 对应 |
+|------|-----|------|
+| `Space` | 双击右滑 | `KEY_F4` |
+| `J` | I | `KEY_F1` |
+| `K` | O | `KEY_F2` |
+| `L` | II | `KEY_F3` |
+
+注意 Space 不再触发拍照；CAMERA NORMAL 模式拍照剩 `Enter`、`Page Down`、`F2`（=K）、
+`VolumeDown`。
 
 ### 相机排线松动
 
