@@ -25,11 +25,11 @@ IS_PI = sys.platform in ("linux", "linux2")
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton,
-    QVBoxLayout, QHBoxLayout, QComboBox,
-    QFrame, QSizePolicy,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QComboBox,
+    QFrame, QSizePolicy, QStackedWidget,
 )
-from PyQt5.QtCore import Qt, QTimer, QDateTime, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QSize, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap, QImageReader
 
 import numpy as np
 
@@ -93,6 +93,13 @@ class UIMode(Enum):
     NORMAL = auto()   # Page Down 拍照，Page Up 进菜单
     MENU   = auto()   # Page Up 循环聚焦，Page Down 进调节
     ADJUST = auto()   # Page Up 增，Page Down 减，双击 Page Up 退出
+
+
+class AppMode(Enum):
+    CAMERA              = auto()  # 拍摄模式（沿用 UIMode 子状态）
+    ALBUM_GRID          = auto()  # 4x3 缩略图
+    ALBUM_SINGLE        = auto()  # 单图全屏
+    ALBUM_DELETE_CONFIRM = auto() # 删除确认覆盖在 SINGLE 之上
 
 
 # ─── 各参数选项（显示用字符串，顺序与内部步进列表对应）─────────
@@ -396,6 +403,274 @@ class PreviewWidget(QLabel):
         self.setStyleSheet("background: #111111;")
 
 
+class AlbumView(QWidget):
+    """
+    相册视图。内部用 QStackedWidget 在 GRID（4x3 缩略图）和 SINGLE（单图全屏）之间切换。
+    DELETE_CONFIRM 用浮动 label 覆盖在 SINGLE 上。
+
+    导航由 CameraUI 通过下列方法驱动：
+      enter_album / leave_album / prev / next / select / back_to_grid
+      request_delete / confirm_delete / cancel_delete
+    """
+
+    GRID_COLS = 4
+    GRID_ROWS = 3
+    PAGE_SIZE = GRID_COLS * GRID_ROWS
+
+    def __init__(self, output_dir: Path, parent=None):
+        super().__init__(parent)
+        self.output_dir = output_dir
+        self.photos: list[Path] = []
+        self.page = 0
+        self.sel = 0
+
+        self.setStyleSheet("background: #000;")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._stack = QStackedWidget(self)
+        outer.addWidget(self._stack)
+
+        self._build_grid_page()
+        self._build_single_page()
+
+    # ─── 页面构建 ───────────────────────────────────────────
+
+    def _build_grid_page(self):
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(4)
+        self._thumb_labels: list[QLabel] = []
+        for r in range(self.GRID_ROWS):
+            for c in range(self.GRID_COLS):
+                lbl = QLabel()
+                lbl.setAlignment(Qt.AlignCenter)
+                lbl.setMinimumSize(180, 135)
+                lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self._thumb_labels.append(lbl)
+                grid.addWidget(lbl, r, c)
+        v.addWidget(grid_host, stretch=1)
+
+        self._grid_status = QLabel()
+        self._grid_status.setAlignment(Qt.AlignCenter)
+        self._grid_status.setStyleSheet(
+            f"color: {HUD_DIM}; font-size: 11px; padding: 2px 8px;"
+        )
+        v.addWidget(self._grid_status)
+
+        self._stack.addWidget(page)
+
+    def _build_single_page(self):
+        owner = self
+
+        class SinglePage(QWidget):
+            def resizeEvent(self, ev):
+                owner._relayout_single()
+                super().resizeEvent(ev)
+
+        page = SinglePage()
+        page.setStyleSheet("background: #000;")
+        self._single_label = QLabel(page)
+        self._single_label.setAlignment(Qt.AlignCenter)
+        self._single_label.setStyleSheet("background: #000;")
+
+        self._confirm_label = QLabel(page)
+        self._confirm_label.setAlignment(Qt.AlignCenter)
+        self._confirm_label.setStyleSheet(
+            f"background: rgba(0,0,0,220); color: {HUD_TEXT}; "
+            f"font-size: 16px; font-weight: bold; "
+            f"border: 2px solid {HUD_CAPTURE}; border-radius: 10px; padding: 18px 24px;"
+        )
+        self._confirm_label.setText("删除这张照片？\n\nO = 确认    I/II = 取消")
+        self._confirm_label.hide()
+
+        self._single_info = QLabel(page)
+        self._single_info.setStyleSheet(
+            f"background: rgba(0,0,0,160); color: {HUD_TEXT}; "
+            f"font-size: 11px; padding: 4px 10px; border-radius: 4px;"
+        )
+        self._single_info.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        self._single_page = page
+        self._stack.addWidget(page)
+
+    def _relayout_single(self):
+        w, h = self._single_page.width(), self._single_page.height()
+        self._single_label.setGeometry(0, 0, w, h)
+        self._render_single_pixmap()
+        self._confirm_label.adjustSize()
+        self._confirm_label.move(
+            (w - self._confirm_label.width()) // 2,
+            (h - self._confirm_label.height()) // 2,
+        )
+        self._single_info.adjustSize()
+        self._single_info.move(10, 10)
+
+    # ─── 公开 API ───────────────────────────────────────────
+
+    def enter_album(self):
+        """进入相册：刷新照片列表，回到 GRID 首页首项"""
+        self.refresh_photos()
+        self.page = 0
+        self.sel = 0
+        self._stack.setCurrentIndex(0)
+        self._render_grid()
+
+    def refresh_photos(self):
+        if not self.output_dir.exists():
+            self.photos = []
+        else:
+            self.photos = sorted(
+                self.output_dir.glob("*.jpg"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+
+    def prev(self):
+        """GRID 选中上一张（含跨页）"""
+        global_idx = self.page * self.PAGE_SIZE + self.sel
+        if global_idx <= 0:
+            return
+        global_idx -= 1
+        self.page = global_idx // self.PAGE_SIZE
+        self.sel = global_idx % self.PAGE_SIZE
+        self._render_grid()
+
+    def next(self):
+        global_idx = self.page * self.PAGE_SIZE + self.sel
+        if global_idx >= len(self.photos) - 1:
+            return
+        global_idx += 1
+        self.page = global_idx // self.PAGE_SIZE
+        self.sel = global_idx % self.PAGE_SIZE
+        self._render_grid()
+
+    def select(self):
+        """GRID → SINGLE"""
+        if not self.photos:
+            return False
+        self._stack.setCurrentIndex(1)
+        self._render_single_pixmap()
+        return True
+
+    def back_to_grid(self):
+        self._confirm_label.hide()
+        self._stack.setCurrentIndex(0)
+        self._render_grid()
+
+    def request_delete(self):
+        self._confirm_label.show()
+        self._confirm_label.raise_()
+        self._relayout_single()
+
+    def cancel_delete(self):
+        self._confirm_label.hide()
+
+    def confirm_delete(self):
+        """删除当前选中照片（含同名 .dng）"""
+        idx = self.page * self.PAGE_SIZE + self.sel
+        if 0 <= idx < len(self.photos):
+            target = self.photos[idx]
+            try:
+                target.unlink(missing_ok=True)
+                dng = target.with_suffix(".dng")
+                dng.unlink(missing_ok=True)
+                print(f"[ALBUM] Deleted {target.name}")
+            except Exception as e:
+                print(f"[ALBUM] Delete failed: {e}")
+        # 删除后回 GRID
+        self.refresh_photos()
+        total = len(self.photos)
+        if total == 0:
+            self.page = 0
+            self.sel = 0
+        else:
+            new_idx = min(idx, total - 1)
+            self.page = new_idx // self.PAGE_SIZE
+            self.sel = new_idx % self.PAGE_SIZE
+        self._confirm_label.hide()
+        self._stack.setCurrentIndex(0)
+        self._render_grid()
+
+    def is_in_single(self) -> bool:
+        return self._stack.currentIndex() == 1
+
+    # ─── 渲染 ───────────────────────────────────────────────
+
+    def _render_grid(self):
+        start = self.page * self.PAGE_SIZE
+        for i, lbl in enumerate(self._thumb_labels):
+            idx = start + i
+            highlighted = (i == self.sel and idx < len(self.photos))
+            border = HUD_ACCENT if highlighted else "transparent"
+            lbl.setStyleSheet(
+                f"background: #1a1a1a; border: 2px solid {border};"
+            )
+            if idx < len(self.photos):
+                self._load_thumb(lbl, self.photos[idx])
+            else:
+                lbl.clear()
+
+        total_pages = max(1, (len(self.photos) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        if self.photos:
+            cur = start + self.sel + 1
+            self._grid_status.setText(
+                f"{cur} / {len(self.photos)}    页 {self.page + 1}/{total_pages}"
+            )
+        else:
+            self._grid_status.setText("无照片")
+
+    def _load_thumb(self, label: QLabel, path: Path):
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        target_w = max(80, label.width() - 8)
+        target_h = max(60, label.height() - 8)
+        orig = reader.size()
+        if orig.isValid() and orig.width() > 0 and orig.height() > 0:
+            ratio = min(target_w / orig.width(), target_h / orig.height())
+            reader.setScaledSize(QSize(
+                max(1, int(orig.width() * ratio)),
+                max(1, int(orig.height() * ratio)),
+            ))
+        img = reader.read()
+        if not img.isNull():
+            label.setPixmap(QPixmap.fromImage(img))
+        else:
+            label.setText("?")
+
+    def _render_single_pixmap(self):
+        idx = self.page * self.PAGE_SIZE + self.sel
+        if not (0 <= idx < len(self.photos)):
+            self._single_label.clear()
+            self._single_info.hide()
+            return
+        path = self.photos[idx]
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        w = max(100, self._single_page.width())
+        h = max(100, self._single_page.height())
+        orig = reader.size()
+        if orig.isValid() and orig.width() > 0 and orig.height() > 0:
+            ratio = min(w / orig.width(), h / orig.height())
+            reader.setScaledSize(QSize(
+                max(1, int(orig.width() * ratio)),
+                max(1, int(orig.height() * ratio)),
+            ))
+        img = reader.read()
+        if not img.isNull():
+            self._single_label.setPixmap(QPixmap.fromImage(img))
+        self._single_info.setText(f"{idx + 1} / {len(self.photos)}    {path.name}")
+        self._single_info.adjustSize()
+        self._single_info.show()
+        self._single_info.raise_()
+
+
 class CameraUI(QMainWindow):
     """
     主窗口。
@@ -430,6 +705,7 @@ class CameraUI(QMainWindow):
         self._preview_widget = preview_widget
 
         # ─── 遥控器状态机 ────────────────────────────────────
+        self._app_mode = AppMode.CAMERA
         self._ui_mode  = UIMode.NORMAL
         self._menu_idx = 0   # 当前聚焦参数：0=ISO 1=SHUTTER 2=AWB
         # 双击检测：第一次 PageUp 等 300ms 看是否有第二次
@@ -517,25 +793,43 @@ class CameraUI(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # 顶层 stacked：[0] camera_page  [1] album_view
+        self._page_stack = QStackedWidget()
+        main_layout.addWidget(self._page_stack)
+
+        # ─── camera_page ─────────────────────────────────────
+        camera_page = QWidget()
+        cam_layout = QVBoxLayout(camera_page)
+        cam_layout.setContentsMargins(0, 0, 0, 0)
+        cam_layout.setSpacing(0)
+
         self.top_hud = TopHUD()
-        main_layout.addWidget(self.top_hud)
+        cam_layout.addWidget(self.top_hud)
 
         if self._preview_widget is not None:
-            main_layout.addWidget(self._preview_widget, stretch=1)
+            cam_layout.addWidget(self._preview_widget, stretch=1)
         elif self.dev_mode:
             self.cv_preview = PreviewWidget()
-            main_layout.addWidget(self.cv_preview, stretch=1)
+            cam_layout.addWidget(self.cv_preview, stretch=1)
         else:
             spacer = QWidget()
             spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            main_layout.addWidget(spacer, stretch=1)
+            cam_layout.addWidget(spacer, stretch=1)
 
         self.bottom_controls = BottomControls(engine=self.engine)
         self.bottom_controls.capture_pressed.connect(self._on_capture)
-        main_layout.addWidget(self.bottom_controls)
+        cam_layout.addWidget(self.bottom_controls)
 
-        # 浮动选项条，作为 central 的直接子组件，绝对定位在当前参数上方
-        self.option_strip = OptionStrip(parent=central)
+        # 浮动选项条，定位在 camera_page 上方
+        self.option_strip = OptionStrip(parent=camera_page)
+
+        self._page_stack.addWidget(camera_page)
+
+        # ─── album_view ──────────────────────────────────────
+        self.album_view = AlbumView(self.output_dir)
+        self._page_stack.addWidget(self.album_view)
+
+        self._page_stack.setCurrentIndex(0)
 
     # ─── 刷新方法（由 QTimer 调用）──────────────────────────
 
@@ -560,9 +854,34 @@ class CameraUI(QMainWindow):
 
     # ─── 键盘快捷键 ──────────────────────────────────────────
 
-    def keyPressEvent(self, event):
-        key = event.key()
+    # 键盘调试别名（无 J09 时方便测试）
+    _DEBUG_KEY_ALIAS = {
+        Qt.Key_Space: Qt.Key_F4,  # 圆圈
+        Qt.Key_J:     Qt.Key_F1,  # I
+        Qt.Key_K:     Qt.Key_F2,  # O
+        Qt.Key_L:     Qt.Key_F3,  # II
+    }
 
+    def keyPressEvent(self, event):
+        key = self._DEBUG_KEY_ALIAS.get(event.key(), event.key())
+
+        # F4 (双击右滑): CAMERA NORMAL ↔ ALBUM 切换；MENU/ADJUST 中忽略以免误触
+        if key == Qt.Key_F4:
+            if self._app_mode == AppMode.CAMERA and self._ui_mode != UIMode.NORMAL:
+                return
+            self._toggle_album()
+            return
+
+        if self._app_mode == AppMode.CAMERA:
+            self._handle_camera_key(key, event)
+        elif self._app_mode == AppMode.ALBUM_GRID:
+            self._handle_album_grid_key(key)
+        elif self._app_mode == AppMode.ALBUM_SINGLE:
+            self._handle_album_single_key(key)
+        elif self._app_mode == AppMode.ALBUM_DELETE_CONFIRM:
+            self._handle_album_confirm_key(key)
+
+    def _handle_camera_key(self, key, event):
         if key in (Qt.Key_VolumeDown, Qt.Key_F2):
             self._on_capture()
             return
@@ -626,6 +945,50 @@ class CameraUI(QMainWindow):
     def _on_pageup_single(self):
         """300ms 内没有第二次 PageUp → 单击已处理完毕，清除 pending 状态"""
         self._pageup_pending = False
+
+    # ─── Album 状态机 ────────────────────────────────────────
+
+    def _toggle_album(self):
+        if self._app_mode == AppMode.CAMERA:
+            self._enter_album()
+        else:
+            self._exit_album()
+
+    def _enter_album(self):
+        # 进 album 前先把相机子状态清干净
+        self._exit_to_normal()
+        self._app_mode = AppMode.ALBUM_GRID
+        self.album_view.enter_album()
+        self._page_stack.setCurrentIndex(1)
+
+    def _exit_album(self):
+        self._app_mode = AppMode.CAMERA
+        self._page_stack.setCurrentIndex(0)
+
+    def _handle_album_grid_key(self, key):
+        if key in (Qt.Key_F1, Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp):
+            self.album_view.prev()
+        elif key in (Qt.Key_F3, Qt.Key_Right, Qt.Key_Down, Qt.Key_PageDown):
+            self.album_view.next()
+        elif key in (Qt.Key_F2, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            if self.album_view.select():
+                self._app_mode = AppMode.ALBUM_SINGLE
+
+    def _handle_album_single_key(self, key):
+        if key in (Qt.Key_F1, Qt.Key_F3, Qt.Key_PageUp, Qt.Key_PageDown):
+            self.album_view.request_delete()
+            self._app_mode = AppMode.ALBUM_DELETE_CONFIRM
+        elif key in (Qt.Key_F2, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Escape):
+            self.album_view.back_to_grid()
+            self._app_mode = AppMode.ALBUM_GRID
+
+    def _handle_album_confirm_key(self, key):
+        if key in (Qt.Key_F2, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.album_view.confirm_delete()
+            self._app_mode = AppMode.ALBUM_GRID
+        elif key in (Qt.Key_F1, Qt.Key_F3, Qt.Key_Escape):
+            self.album_view.cancel_delete()
+            self._app_mode = AppMode.ALBUM_SINGLE
 
     # ─── 状态机 ──────────────────────────────────────────────
 

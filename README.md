@@ -56,11 +56,13 @@ J09 设备有一个小触摸板和三个物理按键（I / O / II），通过 `j
 - grab `event8`（按键），把 KEY_BACK/KEY_VOLUMEDOWN/KEY_SLEEP 映射为 F1/F2/F3（绕过 Wayland 媒体键拦截）
 - `--app-mode` 模式下关闭鼠标光标移动，仅保留手势 → 方向键 + tap
 
-启动：
+启动：开机由 systemd 服务 `j09-touchpad.service` 自动拉起（见下方
+「开机自启」），主 app 由 labwc autostart 启动。临时调试：
 
 ```bash
-sudo python j09_touchpad.py --app-mode &
-python main.py
+sudo systemctl stop j09-touchpad        # 停服务
+sudo python j09_touchpad.py --app-mode  # 前台跑，看输出
+sudo systemctl start j09-touchpad       # 调完恢复
 ```
 
 ### 三模式状态机
@@ -110,29 +112,56 @@ sudo pkill -9 -f j09_touchpad.py
 alias kilj09='sudo fuser -k /dev/input/event8 /dev/input/event9 2>/dev/null; sudo pkill -9 -f j09_touchpad.py 2>/dev/null; true'
 ```
 
-## 开机自启（systemd）
+## 开机自启
+
+两件事分开管：
+
+1. **J09 守护进程（systemd，root）**：要 root 才能 grab evdev 和创建
+   uinput 虚拟设备，所以走 systemd 而不是 labwc autostart。
+2. **主 app（labwc autostart，用户态）**：要继承 Wayland 环境变量，
+   只能在 compositor 起来后跑。
+
+### J09 守护进程：systemd service
 
 ```ini
-# /etc/systemd/system/picamera.service
+# /etc/systemd/system/j09-touchpad.service
 [Unit]
-Description=PiCamera2 App
-After=graphical.target
+Description=J09 Bluetooth Touchpad Daemon
+After=bluetooth.target
+Wants=bluetooth.target
 
 [Service]
-User=pi
-WorkingDirectory=/home/pi/picamera2_app
-ExecStart=/usr/bin/python3 /home/pi/picamera2_app/main.py
+Type=simple
+ExecStart=/usr/bin/python3 /home/pi/PiCamera/j09_touchpad.py --app-mode
 Restart=always
-RestartSec=3
-Environment=DISPLAY=:0
+RestartSec=2
+StandardOutput=append:/home/pi/PiCamera/j09.log
+StandardError=append:/home/pi/PiCamera/j09.log
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable picamera
-sudo systemctl start picamera
+sudo systemctl daemon-reload
+sudo systemctl enable --now j09-touchpad
+```
+
+常用命令：
+
+```bash
+sudo systemctl status j09-touchpad     # 状态
+sudo systemctl restart j09-touchpad    # 重启
+sudo journalctl -u j09-touchpad -f     # 跟踪日志
+```
+
+### 主 app：labwc autostart
+
+`~/.config/labwc/autostart`：
+
+```bash
+wlr-randr --output HDMI-A-1 --transform 90
+sleep 1 && cd /home/pi/PiCamera && python main.py >> /home/pi/PiCamera/app.log 2>&1 &
 ```
 
 ## 文件结构
