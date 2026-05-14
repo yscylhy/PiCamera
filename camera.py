@@ -29,7 +29,7 @@ else:
 class CameraConfig:
     """相机配置，全部参数集中在这里，便于序列化持久化"""
     # 预览流分辨率（会被 GPU 直通到显示器，不走 Python）
-    preview_size: Tuple[int, int] = (1920, 1080)
+    preview_size: Tuple[int, int] = (640, 480)
     # 拍摄流分辨率（IMX477 最大 4056x3040）
     still_size: Tuple[int, int] = (4056, 3040)
     # 手动控制（None 表示 Auto）

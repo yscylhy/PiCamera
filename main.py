@@ -19,13 +19,13 @@ def parse_args():
     )
     parser.add_argument(
         "--output",
-        default="./photos",
+        default="/home/pi/PiCamera/photos",
         help="Output directory for captured photos",
     )
     parser.add_argument(
         "--preview-size",
-        default="1920x1080",
-        help="Preview resolution WxH (default: 1920x1080)",
+        default="640x480",
+        help="Preview resolution WxH (default: 640x480, 4:3 matches sensor)",
     )
     return parser.parse_args()
 

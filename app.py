@@ -52,8 +52,8 @@ class CameraApp:
     def __init__(
         self,
         interface: str = "csi",
-        output_dir: str = "./photos",
-        preview_size: tuple = (1920, 1080),
+        output_dir: str = "/home/pi/PiCamera/photos",
+        preview_size: tuple = (640, 480),
     ):
         self.interface = interface
         self.output_dir = Path(output_dir)
